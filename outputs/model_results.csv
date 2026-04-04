@@ -1,0 +1,5 @@
+Vegetable,Accuracy,Directional Accuracy,Test Rows
+Tomato,59%,76%,237
+Onion,56%,49%,246
+Potato,66%,46%,264
+Overall,61%,60%,747

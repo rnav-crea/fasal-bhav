@@ -1,0 +1,7 @@
+Vegetable,State,Current Price,Prediction,Confidence,Probability
+Tomato,Karnataka,₹45/kg,↑ UP,High,77%
+Tomato,Maharashtra,₹38/kg,↓ DOWN,High,89%
+Onion,Maharashtra,₹25/kg,↓ DOWN,High,88%
+Onion,Rajasthan,₹28/kg,↓ DOWN,High,90%
+Potato,Uttar Pradesh,₹16/kg,↑ UP,High,84%
+Potato,West Bengal,₹18/kg,↑ UP,High,91%
