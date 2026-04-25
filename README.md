@@ -137,32 +137,59 @@ Prediction rule    : Custom STABLE threshold (not plain argmax)
 fasal-bhav/
 │
 ├── README.md                          
-├── requirements.txt                   ← Dependencies
+├── requirements.txt                   ← Root dependencies
 ├── .gitignore
 │
 ├── notebook/
 │   └── LightGBM.ipynb                ← Full pipeline notebook
 │
-├── data/
-│   └── master_dataset.csv            ← Cleaned merged dataset
-│                                        (2216 rows, 17 columns)
+├── UI/                                ← Streamlit web application
+│   ├── app.py                         ← Main Streamlit dashboard
+│   ├── fetch_and_predict.py           ← Data fetching & predictions
+│   ├── predict_3month.py              ← 3-month forecast logic
+│   ├── requirements.txt               ← UI dependencies
+│   ├── data/
+│   │   └── master_dataset.csv         ← Historical data for UI
+│   └── models/
+│       ├── lgbm_final.txt             ← Trained LightGBM model
+│       ├── le_target.pkl              ← Label encoder
+│       ├── cat_mappings.pkl           ← Category mappings
+│       └── feature_cols.csv           ← Feature list
 │
-├── models/
-│   ├── lgbm_final.txt                ← Trained LightGBM model
-│   ├── le_target.pkl                 ← Label encoder
-│   ├── feature_cols.csv              ← Feature list
-│   └── cat_mappings.pkl              ← Category mappings
+├── data/                              ⚠️ Excluded from git
+│   └── master_dataset.csv            
 │
-└── outputs/
-    ├── model_results.csv             ← Accuracy per vegetable
-    ├── confusion_matrix.png          ← Confusion matrix plot
-    ├── feature_importance.png        ← Top 20 features plot
-    └── sample_predictions.csv        ← Sample forecast output
+├── models/                            ⚠️ Excluded from git
+│   └── *.pkl, *.txt                   
+│
+└── outputs/                           ⚠️ Excluded from git
+    └── Results and visualizations
 ```
 
 ---
 
 ## How to Run
+
+### Option 1: Interactive Dashboard (Recommended for Users)
+
+**1. Clone and setup**
+```bash
+git clone https://github.com/YOUR_USERNAME/fasal-bhav.git
+cd fasal-bhav/UI
+pip install -r requirements.txt
+```
+
+**2. Run the Streamlit app**
+```bash
+streamlit run app.py
+```
+
+The app will open at `http://localhost:8501` — browse vegetable prices,
+view 3-month forecasts, and check confidence scores interactively.
+
+---
+
+### Option 2: Jupyter Notebook (For Model Exploration)
 
 **1. Clone the repository**
 ```bash
@@ -184,6 +211,21 @@ jupyter notebook notebook/LightGBM.ipynb
 
 The notebook runs end to end — data loading, feature engineering,
 model training, and evaluation.
+
+---
+
+## Dashboard Features
+
+The **Streamlit UI** (`UI/app.py`) provides an interactive interface for farmers and traders:
+
+- 📊 **Real-time Price Browse** — Current prices across 18 states for Tomato, Onion, Potato
+- 🔮 **3-Month Forecast** — View predicted price movements (UP/DOWN/STABLE) with confidence scores
+- 🗺️ **State-wise Comparison** — Compare prices and predictions across regions
+- 📈 **Price Trends** — Historical price charts with seasonal patterns
+- 🎯 **Confidence Indicators** — Model confidence for each prediction
+- ⚡ **Fresh Data Fetch** — Option to fetch latest AGMARKNET and weather data
+
+**Tech Stack:** Streamlit + LightGBM + Open-Meteo API + Pandas
 
 ---
 
@@ -228,8 +270,10 @@ drops Tomato accuracy by 4–6%.
 
 - Add 5+ vegetables: Brinjal, Okra, Cauliflower, Green Chilli, Cabbage
 - Expand to all 28 states with sufficient mandi data
-- Build Streamlit dashboard for farmer-facing prediction app
+- ✅ ~~Build Streamlit dashboard~~ (Completed — see UI/ folder)
 - Add SHAP explainability for feature interpretation
 - Integrate government policy event flags (export ban, MSP changes)
 - Deploy as REST API for integration with agricultural advisory systems
+- Add real-time price notifications via SMS/email for price threshold alerts
+- Multi-language UI for regional farmer accessibility
 
