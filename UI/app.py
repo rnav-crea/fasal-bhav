@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,6 +10,11 @@ from predict_3month    import (load_artifacts,
                                 predict_3_months,
                                 predict_all_states,
                                 get_month_name)
+
+# Get the directory of the current script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(SCRIPT_DIR, "models")
+DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 
 # ════════════════════════════════════════════════════════
 # PAGE CONFIG & STYLING
@@ -209,19 +215,21 @@ st.markdown("<hr>", unsafe_allow_html=True)
 # ════════════════════════════════════════════════════════
 @st.cache_resource
 def load_model():
-    model        = lgb.Booster(
-                       model_file="models/lgbm_final.txt")
-    le_target    = joblib.load("models/le_target.pkl")
-    feature_cols = pd.read_csv(
-                       "models/feature_cols.csv"
-                   )["feature"].tolist()
-    cat_mappings = joblib.load("models/cat_mappings.pkl")
+    model_path = os.path.join(MODELS_DIR, "lgbm_final.txt")
+    le_target_path = os.path.join(MODELS_DIR, "le_target.pkl")
+    feature_cols_path = os.path.join(MODELS_DIR, "feature_cols.csv")
+    cat_mappings_path = os.path.join(MODELS_DIR, "cat_mappings.pkl")
+    
+    model        = lgb.Booster(model_file=model_path)
+    le_target    = joblib.load(le_target_path)
+    feature_cols = pd.read_csv(feature_cols_path)["feature"].tolist()
+    cat_mappings = joblib.load(cat_mappings_path)
     return model, le_target, feature_cols, cat_mappings
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv("data/master_dataset.csv",
-                     parse_dates=["date"])
+    data_path = os.path.join(DATA_DIR, "master_dataset.csv")
+    df = pd.read_csv(data_path, parse_dates=["date"])
     df = df.sort_values(["state", "vegetable", "date"])
     return df
 

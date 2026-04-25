@@ -3,23 +3,29 @@ import numpy as np
 import lightgbm as lgb
 import joblib
 from datetime import datetime
+import os
+
+# Get the directory of the current script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(SCRIPT_DIR, "models")
+DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 
 # ════════════════════════════════════════════════════════
 # LOAD MODEL ARTIFACTS
 # ════════════════════════════════════════════════════════
 def load_artifacts():
-    model        = lgb.Booster(
-                       model_file="models/lgbm_final.txt")
-    le_target    = joblib.load("models/le_target.pkl")
-    feature_cols = pd.read_csv(
-                       "models/feature_cols.csv"
-                   )["feature"].tolist()
-    cat_mappings = joblib.load("models/cat_mappings.pkl")
-    df_hist      = pd.read_csv(
-                       "data/master_dataset.csv",
-                       parse_dates=["date"])
-    df_hist      = df_hist.sort_values(
-                       ["state", "vegetable", "date"])
+    model_path = os.path.join(MODELS_DIR, "lgbm_final.txt")
+    le_target_path = os.path.join(MODELS_DIR, "le_target.pkl")
+    feature_cols_path = os.path.join(MODELS_DIR, "feature_cols.csv")
+    cat_mappings_path = os.path.join(MODELS_DIR, "cat_mappings.pkl")
+    data_path = os.path.join(DATA_DIR, "master_dataset.csv")
+    
+    model        = lgb.Booster(model_file=model_path)
+    le_target    = joblib.load(le_target_path)
+    feature_cols = pd.read_csv(feature_cols_path)["feature"].tolist()
+    cat_mappings = joblib.load(cat_mappings_path)
+    df_hist      = pd.read_csv(data_path, parse_dates=["date"])
+    df_hist      = df_hist.sort_values(["state", "vegetable", "date"])
     return model, le_target, feature_cols, \
            cat_mappings, df_hist
 
