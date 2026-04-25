@@ -229,6 +229,34 @@ The **Streamlit UI** (`UI/app.py`) provides an interactive interface for farmers
 
 ---
 
+## Deploy on Streamlit Cloud
+
+### Step 1: Push to GitHub
+```bash
+git push origin main
+```
+
+### Step 2: Connect to Streamlit Cloud
+1. Go to [streamlit.io/cloud](https://streamlit.io/cloud)
+2. Click **"New app"**
+3. Select your repository: `vegetable-price-prediction-india`
+4. Choose branch: `main`
+5. Set main file path to: `UI/app.py`
+6. Click **"Deploy"**
+
+### Step 3: (Optional) Set Environment Variables
+If you need custom AGMARKNET API keys:
+1. In Streamlit Cloud dashboard, go to **"Manage app"**
+2. Click **"Secrets"**
+3. Add:
+   ```
+   DATA_GOV_API_KEY = "your_api_key_here"
+   ```
+
+**Your app will be live in ~2-3 minutes!** 🚀
+
+---
+
 ## Key Findings
 
 **Tomato is most predictable (76% directional accuracy)**
