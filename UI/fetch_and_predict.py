@@ -4,6 +4,10 @@ import numpy as np
 from datetime import datetime, timedelta
 import os
 
+# Get the directory of the current script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(SCRIPT_DIR, "data")
+
 # ════════════════════════════════════════════════════════
 # CONFIG
 # ════════════════════════════════════════════════════════
@@ -54,7 +58,8 @@ def _get_seasonal_weather_lookup():
     global _SEASONAL_WEATHER_LOOKUP
 
     if _SEASONAL_WEATHER_LOOKUP is None:
-        df = pd.read_csv("data/master_dataset.csv")
+        data_path = os.path.join(DATA_DIR, "master_dataset.csv")
+        df = pd.read_csv(data_path)
         df["month"] = pd.to_datetime(
             df["date"], errors="coerce").dt.month
         _SEASONAL_WEATHER_LOOKUP = (
