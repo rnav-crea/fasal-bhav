@@ -239,15 +239,51 @@ def load_prediction_artifacts():
     return load_artifacts()
 
 
-@st.cache_data(ttl=60 * 60 * 6)
+# ════════════════════════════════════════════════════════
+# PRE-FETCH & CACHE LIVE DATA (Works on Streamlit Cloud!)
+# ════════════════════════════════════════════════════════
+@st.cache_data(ttl=60 * 60 * 6)  # Cache for 6 hours
 def get_live_snapshot(cache_version=0):
-    _ = cache_version
-    fetched, metadata = fetch_all_data()
-    fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return fetched, metadata, fetched_at
+    """
+    Fetches live market data once and caches for 6 hours.
+    
+    First user (or after 6 hours): Takes 60-90 seconds
+    Subsequent users (within 6 hours): Instant (from cache)
+    
+    This makes Streamlit Cloud practical by:
+    - Pre-fetching expensive API calls
+    - Caching results for all users
+    - Updates automatically every 6 hours
+    """
+    _ = cache_version  # Used to manually invalidate cache
+    
+    print("\n🔄 PRE-FETCHING LIVE MARKET DATA...")
+    print("   (First load only, then cached for 6 hours)")
+    
+    try:
+        fetched, metadata = fetch_all_data()
+        fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        print(f"✅ Data cached at: {fetched_at}")
+        print(f"✅ Cache duration: 6 hours")
+        
+        return fetched, metadata, fetched_at
+    except Exception as e:
+        print(f"❌ Fetch failed: {e}")
+        raise
+
 
 model, le_target, feature_cols, cat_mappings = load_model()
 df = load_data()
+
+# PRE-FETCH data on app startup (goes into cache)
+try:
+    live_data, live_metadata, fetched_at = get_live_snapshot()
+except Exception as e:
+    st.warning(f"⚠️ Could not pre-fetch data: {e}")
+    live_data = None
+    live_metadata = None
+    fetched_at = None
 
 # ════════════════════════════════════════════════════════
 # HELPER FUNCTIONS

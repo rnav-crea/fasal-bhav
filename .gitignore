@@ -9,9 +9,14 @@ outputs/
 .venv/
 .env
 .env.local
-*.pkl
 *.pickle
 .vscode/
 *.egg-info/
 dist/
 build/
+
+# But DO track model files in UI folder (needed for deployment)
+!UI/models/
+!UI/models/*.pkl
+!UI/models/*.txt
+!UI/models/*.csv

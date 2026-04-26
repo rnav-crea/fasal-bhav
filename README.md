@@ -231,6 +231,22 @@ The **Streamlit UI** (`UI/app.py`) provides an interactive interface for farmers
 
 ## Deploy on Streamlit Cloud
 
+### ✅ Smart Caching Solution Now Integrated
+
+Your app now uses **intelligent pre-fetch caching** to work perfectly on Streamlit Cloud:
+
+**How it works:**
+- **First user load** → Fetches live market data (60-90 sec, one time only)
+- **Subsequent users** → Gets cached data instantly ⚡
+- **Auto-refresh** → Cache expires every 6 hours with fresh data
+
+This means:
+✅ Uses live AGMARKNET prices (not historical data)
+✅ Instant predictions after first load
+✅ Works on Streamlit Cloud's free tier
+✅ Automatic updates every 6 hours
+
+
 ### Step 1: Push to GitHub
 ```bash
 git push origin main
@@ -254,6 +270,25 @@ If you need custom AGMARKNET API keys:
    ```
 
 **Your app will be live in ~2-3 minutes!** 🚀
+
+### Monitor First Load
+When the first user opens your app:
+```
+🔄 PRE-FETCHING LIVE MARKET DATA...
+   (First load only, then cached for 6 hours)
+
+Fetching LIVE prices for Tomato...
+  Got live prices for 18 states
+Fetching LIVE prices for Onion...
+  Got live prices for 18 states
+Fetching LIVE prices for Potato...
+  Got live prices for 18 states
+
+✅ Data cached at: 2026-04-26 09:15:30
+✅ Cache duration: 6 hours
+```
+
+After this, everyone sees instant predictions! ⚡
 
 ---
 

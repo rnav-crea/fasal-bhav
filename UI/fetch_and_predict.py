@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import os
+import time
 
 # Get the directory of the current script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -74,54 +75,104 @@ def _get_seasonal_weather_lookup():
     return _SEASONAL_WEATHER_LOOKUP
 
 # ════════════════════════════════════════════════════════
+# CACHING & ERROR HANDLING
+# ════════════════════════════════════════════════════════
+def get_fallback_price(vegetable, state):
+    """
+    Get fallback price from historical data
+    when live API fails — ensures app still works
+    """
+    try:
+        data_path = os.path.join(DATA_DIR, "master_dataset.csv")
+        df = pd.read_csv(data_path)
+        
+        recent = df[
+            (df["vegetable"].str.strip().str.title() == vegetable) &
+            (df["state"].str.strip().str.title() == state)
+        ].tail(5)
+        
+        if recent.empty:
+            return None
+        
+        return {
+            "modal_price": round(recent["modal_price"].median(), 2),
+            "min_price"  : round(recent["modal_price"].min(), 2),
+            "max_price"  : round(recent["modal_price"].max(), 2),
+            "records"    : len(recent),
+            "from_fallback": True
+        }
+    except Exception as e:
+        print(f"  Fallback error: {e}")
+        return None
+
+
+# ════════════════════════════════════════════════════════
 # STEP 1 — FETCH CURRENT PRICE FROM data.gov.in
 # ════════════════════════════════════════════════════════
 def fetch_current_prices(vegetable):
     """
     Fetch last 30 days of price data for a vegetable
     Returns state-wise median modal price
+    With retry logic and fallback to historical data
     """
     print(f"Fetching prices for {vegetable}...")
 
     all_records = []
     offset      = 0
     limit       = 1000
+    max_retries = 2
 
     # Date range — last 30 days
     end_date   = datetime.today()
     start_date = end_date - timedelta(days=30)
 
-    while True:
-        params = {
-            "api-key"              : API_KEY,
-            "format"               : "json",
-            "limit"                : limit,
-            "offset"               : offset,
-            "filters[commodity]"   : vegetable,
-        }
-
+    for retry in range(max_retries):
         try:
-            resp    = requests.get(
-                BASE_URL, params=params, timeout=30)
-            data    = resp.json()
-            records = data.get("records", [])
+            while True:
+                params = {
+                    "api-key"              : API_KEY,
+                    "format"               : "json",
+                    "limit"                : limit,
+                    "offset"               : offset,
+                    "filters[commodity]"   : vegetable,
+                }
 
-            if not records:
-                break
+                try:
+                    resp    = requests.get(
+                        BASE_URL, params=params, timeout=15)
+                    data    = resp.json()
+                    records = data.get("records", [])
 
-            all_records.extend(records)
-            total = int(data.get("total", 0))
-            offset += limit
+                    if not records:
+                        break
 
-            if offset >= total or offset >= 5000:
+                    all_records.extend(records)
+                    total = int(data.get("total", 0))
+                    offset += limit
+
+                    if offset >= total or offset >= 5000:
+                        break
+
+                except (requests.Timeout, requests.ConnectionError) as e:
+                    if retry < max_retries - 1:
+                        print(f"  Timeout, retrying... ({retry+1}/{max_retries})")
+                        time.sleep(2 ** retry)  # exponential backoff
+                        continue
+                    else:
+                        raise
+            
+            # If we got here, we have data
+            if all_records:
                 break
 
         except Exception as e:
-            print(f"  API error: {e}")
-            break
+            print(f"  API error on attempt {retry+1}: {e}")
+            if retry < max_retries - 1:
+                time.sleep(2 ** retry)
+            continue
 
     if not all_records:
-        print(f"  No data fetched for {vegetable}")
+        print(f"  No live data for {vegetable}, using fallback")
         return {}
 
     df = pd.DataFrame(all_records)
@@ -334,7 +385,8 @@ def fetch_all_data():
       - metadata: {
           'available_states': list of states with successful data,
           'failed_states': list of states without data,
-          'fetched_at': timestamp string
+          'fetched_at': timestamp string,
+          'fallback_used': True if historical data was used
         }
     """
     print("Starting data fetch...")
@@ -343,11 +395,30 @@ def fetch_all_data():
     result = {}
     available_states = set()
     failed_states = set()
+    fallback_used = False
+    
+    # Load historical data once for fallback
+    try:
+        data_path = os.path.join(DATA_DIR, "master_dataset.csv")
+        df_hist = pd.read_csv(data_path)
+    except Exception as e:
+        print(f"Warning: Could not load historical data: {e}")
+        df_hist = None
 
     # Fetch prices for all 3 vegetables
     price_data = {}
     for veg in VEGETABLES:
         price_data[veg] = fetch_current_prices(veg)
+        
+        # If no live data found, use fallback for all states
+        if not price_data[veg]:
+            print(f"  Live API returned no data for {veg}, using fallback...")
+            price_data[veg] = {}
+            for state in TARGET_STATES:
+                fallback = get_fallback_price(veg, state)
+                if fallback:
+                    price_data[veg][state] = fallback
+                    fallback_used = True
 
     # Fetch weather for all states
     weather_data = {}
@@ -356,6 +427,12 @@ def fetch_all_data():
 
         # Last month actual weather
         last_month = fetch_weather_last_month(state)
+        
+        # Fallback: use historical average if current month fetch fails
+        if not last_month:
+            print(f"  Weather API failed for {state}, using historical average...")
+            current_month = datetime.today().month
+            last_month = get_seasonal_weather_avg(state, current_month)
 
         # Next 3 months forecast/estimate
         month1_weather = fetch_weather_forecast(
@@ -378,13 +455,28 @@ def fetch_all_data():
         for state in TARGET_STATES:
             price   = price_data[veg].get(state)
             weather = weather_data.get(state, {})
+            
+            # Use fallback price if not in live data
+            if not price:
+                price = get_fallback_price(veg, state)
+                if price:
+                    fallback_used = True
 
-            if price and weather.get("last_month"):
+            # Allow data if we have price (live or fallback)
+            # Use fallback weather if needed
+            if price:
+                weather_last = weather.get("last_month")
+                if not weather_last:
+                    # Try fallback weather
+                    current_month = datetime.today().month
+                    weather_last = get_seasonal_weather_avg(state, current_month)
+                
+                # Include data even if weather is incomplete
                 result[veg][state] = {
                     "modal_price": price["modal_price"],
                     "min_price"  : price["min_price"],
                     "max_price"  : price["max_price"],
-                    "weather_last": weather["last_month"],
+                    "weather_last": weather_last,
                     "weather_m1"  : weather.get("month1"),
                     "weather_m2"  : weather.get("month2"),
                     "weather_m3"  : weather.get("month3"),
@@ -398,11 +490,14 @@ def fetch_all_data():
         "available_states": sorted(list(available_states)),
         "failed_states": sorted(list(failed_states)),
         "fetched_at": datetime.now().isoformat(),
+        "fallback_used": fallback_used
     }
 
     print("\nData fetch complete")
     print(f"Vegetables fetched : {len(result)}")
     print(f"Available states   : {len(available_states)}/18")
+    if fallback_used:
+        print("⚠️  Fallback to historical data used")
     if failed_states:
         print(f"Failed states      : {', '.join(failed_states)}")
     for veg in result:
