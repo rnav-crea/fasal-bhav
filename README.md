@@ -73,6 +73,31 @@ Uttarakhand, Bihar
 | Open-Meteo API | Weather data collection |
 | Google Colab | Training environment |
 
+## Data Generation Process
+
+The `master_dataset.csv` file is generated through the following process:
+1. **Price Data Collection**: Historical wholesale modal prices for Tomato, Onion, and Potato across 18 Indian states are sourced from AGMARKNET via data.gov.in API (January 2022 – December 2025).
+2. **Weather Data Collection**: Daily historical weather data (temperature max/min, rainfall, humidity) is collected from Open-Meteo API for the coordinates of each state's agricultural hub.
+3. **Data Merging**: Price and weather datasets are merged on state and date, creating a unified dataset.
+4. **Feature Engineering**: 38 domain-specific features are engineered including:
+   - Price lags and ratios (1-month, 4-month)
+   - Weather deviations from seasonal norms
+   - Producer state spillover signals (Karnataka for Tomato, Maharashtra for Onion, Uttar Pradesh for Potato)
+   - Cyclical time encoding (month sin/cos)
+   - Volatility and momentum indicators
+   - Normalized price and arrival quantities
+5. **Data Cleaning**: 
+   - Removed outliers (prices <0.5 or >500 ₹/kg)
+   - Standardized state names
+   - Filled missing values using forward fill
+   - Ensured no missing values in final dataset (2216 rows, 0 missing)
+6. **Target Variable Creation**: 
+   - Calculated next month's percentage price change
+   - Labeled as UP (>8%), DOWN (<-8%), or STABLE (-8% to 8%)
+   - Applied custom STABLE threshold during prediction (not plain argmax)
+
+This process is fully documented in the `notebook/LightGBM.ipynb` file, which executes end-to-end from raw data collection to model training and evaluation.
+
 ---
 
 ## Pipeline
@@ -231,22 +256,6 @@ The **Streamlit UI** (`UI/app.py`) provides an interactive interface for farmers
 
 ## Deploy on Streamlit Cloud
 
-### ✅ Smart Caching Solution Now Integrated
-
-Your app now uses **intelligent pre-fetch caching** to work perfectly on Streamlit Cloud:
-
-**How it works:**
-- **First user load** → Fetches live market data (60-90 sec, one time only)
-- **Subsequent users** → Gets cached data instantly ⚡
-- **Auto-refresh** → Cache expires every 6 hours with fresh data
-
-This means:
-✅ Uses live AGMARKNET prices (not historical data)
-✅ Instant predictions after first load
-✅ Works on Streamlit Cloud's free tier
-✅ Automatic updates every 6 hours
-
-
 ### Step 1: Push to GitHub
 ```bash
 git push origin main
@@ -269,26 +278,23 @@ If you need custom AGMARKNET API keys:
    DATA_GOV_API_KEY = "your_api_key_here"
    ```
 
+---
+
+## Reduce Cold Starts (Streamlit Cloud Free)
+
+Streamlit Community Cloud sleeps after inactivity. To make the app feel instant:
+
+1. The app now serves a cached disk snapshot on first load.
+2. Use a scheduled ping to warm the cache without blocking users:
+
+```
+https://YOUR_APP_URL/?warm=1
+```
+
+You can use a free cron service (for example, UptimeRobot) to hit the warm URL
+every 30 to 60 minutes. This keeps the app awake and refreshes the cached data.
+
 **Your app will be live in ~2-3 minutes!** 🚀
-
-### Monitor First Load
-When the first user opens your app:
-```
-🔄 PRE-FETCHING LIVE MARKET DATA...
-   (First load only, then cached for 6 hours)
-
-Fetching LIVE prices for Tomato...
-  Got live prices for 18 states
-Fetching LIVE prices for Onion...
-  Got live prices for 18 states
-Fetching LIVE prices for Potato...
-  Got live prices for 18 states
-
-✅ Data cached at: 2026-04-26 09:15:30
-✅ Cache duration: 6 hours
-```
-
-After this, everyone sees instant predictions! ⚡
 
 ---
 

@@ -3,7 +3,44 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import os
-import time
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from functools import lru_cache
+
+logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler("app.log"),
+            logging.StreamHandler()
+        ]
+    )
+
+def _get_requests_session():
+    """Create a requests session with retry and connection pooling."""
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=1,
+        backoff_factor=0.3,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy,
+        pool_connections=10,
+        pool_maxsize=20,
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+_SESSION = _get_requests_session()
 
 # Get the directory of the current script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -12,10 +49,7 @@ DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 # ════════════════════════════════════════════════════════
 # CONFIG
 # ════════════════════════════════════════════════════════
-API_KEY     = os.getenv(
-    "DATA_GOV_API_KEY",
-    "579b464db66ec23bdd000001928ace9212864ca56da90a5ae29b9aa5"
-)
+API_KEY = os.getenv("DATA_GOV_API_KEY")
 RESOURCE_ID = "9ef84268-d588-465a-a308-a864a43d0070"
 BASE_URL    = f"https://api.data.gov.in/resource/{RESOURCE_ID}"
 
@@ -52,6 +86,16 @@ STATE_COORDS = {
 }
 
 _SEASONAL_WEATHER_LOOKUP = None
+_HISTORICAL_DF = None
+
+
+def _get_hist_df():
+    """Load historical master dataset once per process."""
+    global _HISTORICAL_DF
+    if _HISTORICAL_DF is None:
+        data_path = os.path.join(DATA_DIR, "master_dataset.csv")
+        _HISTORICAL_DF = pd.read_csv(data_path)
+    return _HISTORICAL_DF
 
 
 def _get_seasonal_weather_lookup():
@@ -77,14 +121,14 @@ def _get_seasonal_weather_lookup():
 # ════════════════════════════════════════════════════════
 # CACHING & ERROR HANDLING
 # ════════════════════════════════════════════════════════
-def get_fallback_price(vegetable, state):
+@lru_cache(maxsize=100)
+def get_fallback_price_cached(vegetable, state):
     """
     Get fallback price from historical data
     when live API fails — ensures app still works
     """
     try:
-        data_path = os.path.join(DATA_DIR, "master_dataset.csv")
-        df = pd.read_csv(data_path)
+        df = _get_hist_df()
         
         recent = df[
             (df["vegetable"].str.strip().str.title() == vegetable) &
@@ -102,8 +146,15 @@ def get_fallback_price(vegetable, state):
             "from_fallback": True
         }
     except Exception as e:
-        print(f"  Fallback error: {e}")
+        logger.error(f"Fallback error: {e}")
         return None
+
+def get_fallback_price(vegetable, state):
+    """
+    Get fallback price from historical data
+    when live API fails — ensures app still works
+    """
+    return get_fallback_price_cached(vegetable, state)
 
 
 # ════════════════════════════════════════════════════════
@@ -115,64 +166,47 @@ def fetch_current_prices(vegetable):
     Returns state-wise median modal price
     With retry logic and fallback to historical data
     """
-    print(f"Fetching prices for {vegetable}...")
+    logger.info(f"Fetching prices for {vegetable}...")
 
     all_records = []
     offset      = 0
     limit       = 1000
-    max_retries = 2
+    session = _SESSION
 
     # Date range — last 30 days
     end_date   = datetime.today()
     start_date = end_date - timedelta(days=30)
 
-    for retry in range(max_retries):
+    while True:
+        params = {
+            "api-key"              : API_KEY,
+            "format"               : "json",
+            "limit"                : limit,
+            "offset"               : offset,
+            "filters[commodity]"   : vegetable,
+        }
+
         try:
-            while True:
-                params = {
-                    "api-key"              : API_KEY,
-                    "format"               : "json",
-                    "limit"                : limit,
-                    "offset"               : offset,
-                    "filters[commodity]"   : vegetable,
-                }
+            resp    = session.get(
+                BASE_URL, params=params, timeout=12)
+            data    = resp.json()
+            records = data.get("records", [])
 
-                try:
-                    resp    = requests.get(
-                        BASE_URL, params=params, timeout=15)
-                    data    = resp.json()
-                    records = data.get("records", [])
-
-                    if not records:
-                        break
-
-                    all_records.extend(records)
-                    total = int(data.get("total", 0))
-                    offset += limit
-
-                    if offset >= total or offset >= 5000:
-                        break
-
-                except (requests.Timeout, requests.ConnectionError) as e:
-                    if retry < max_retries - 1:
-                        print(f"  Timeout, retrying... ({retry+1}/{max_retries})")
-                        time.sleep(2 ** retry)  # exponential backoff
-                        continue
-                    else:
-                        raise
-            
-            # If we got here, we have data
-            if all_records:
+            if not records:
                 break
 
-        except Exception as e:
-            print(f"  API error on attempt {retry+1}: {e}")
-            if retry < max_retries - 1:
-                time.sleep(2 ** retry)
-            continue
+            all_records.extend(records)
+            total = int(data.get("total", 0))
+            offset += limit
+
+            if offset >= total or offset >= 5000:
+                break
+        except (requests.Timeout, requests.ConnectionError) as e:
+            logger.error(f"API error: {e}")
+            break
 
     if not all_records:
-        print(f"  No live data for {vegetable}, using fallback")
+        logger.info(f"No live data for {vegetable}, using fallback")
         return {}
 
     df = pd.DataFrame(all_records)
@@ -228,7 +262,7 @@ def fetch_current_prices(vegetable):
             "records"    : int(row["records"])
         }
 
-    print(f"  Got prices for {len(result)} states")
+    logger.info(f"Got prices for {len(result)} states")
     return result
 
 
@@ -263,8 +297,8 @@ def fetch_weather_last_month(state):
     }
 
     try:
-        resp = requests.get(url, params=params,
-                            timeout=30)
+        session = _SESSION
+        resp = session.get(url, params=params, timeout=20)
         data = resp.json()
 
         if "daily" not in data:
@@ -284,7 +318,7 @@ def fetch_weather_last_month(state):
         }
 
     except Exception as e:
-        print(f"  Weather error for {state}: {e}")
+        logger.error(f"Weather error for {state}: {e}")
         return None
 
 
@@ -315,8 +349,9 @@ def fetch_weather_forecast(state, month_offset=1):
         }
 
         try:
-            resp = requests.get(
-                url, params=params, timeout=30)
+            session = _SESSION
+            resp = session.get(
+                url, params=params, timeout=20)
             data = resp.json()
 
             if "daily" not in data:
@@ -335,7 +370,7 @@ def fetch_weather_forecast(state, month_offset=1):
                     .mean(), 1),
             }
         except Exception as e:
-            print(f"  Forecast error: {e}")
+            logger.error(f"Forecast error: {e}")
             return None
 
     # For months 2 and 3 use historical seasonal average
@@ -389,8 +424,8 @@ def fetch_all_data():
           'fallback_used': True if historical data was used
         }
     """
-    print("Starting data fetch...")
-    print("=" * 50)
+    logger.info("Starting data fetch...")
+    logger.info("=" * 50)
 
     result = {}
     available_states = set()
@@ -402,17 +437,29 @@ def fetch_all_data():
         data_path = os.path.join(DATA_DIR, "master_dataset.csv")
         df_hist = pd.read_csv(data_path)
     except Exception as e:
-        print(f"Warning: Could not load historical data: {e}")
+        logger.warning(f"Could not load historical data: {e}")
         df_hist = None
 
-    # Fetch prices for all 3 vegetables
+    # Fetch prices for all 3 vegetables in parallel
+    # Reduced workers to avoid API rate limits
     price_data = {}
+    with ThreadPoolExecutor(max_workers=2) as executor:  # Reduced from 3 to 2
+        futures = {
+            executor.submit(fetch_current_prices, veg): veg
+            for veg in VEGETABLES
+        }
+        for future in as_completed(futures):
+            veg = futures[future]
+            try:
+                price_data[veg] = future.result()
+            except Exception as e:
+                logger.error(f"Price fetch failed for {veg}: {e}")
+                price_data[veg] = {}
+
+    # If no live data found, use fallback for all states
     for veg in VEGETABLES:
-        price_data[veg] = fetch_current_prices(veg)
-        
-        # If no live data found, use fallback for all states
-        if not price_data[veg]:
-            print(f"  Live API returned no data for {veg}, using fallback...")
+        if not price_data.get(veg):
+            logger.info(f"Live API returned no data for {veg}, using fallback...")
             price_data[veg] = {}
             for state in TARGET_STATES:
                 fallback = get_fallback_price(veg, state)
@@ -420,34 +467,48 @@ def fetch_all_data():
                     price_data[veg][state] = fallback
                     fallback_used = True
 
-    # Fetch weather for all states
-    weather_data = {}
-    for state in TARGET_STATES:
-        print(f"Fetching weather for {state}...")
+    # Fetch weather for all states in parallel with reduced concurrency
+    def _fetch_weather_for_state(state):
+        logger.info(f"Fetching weather for {state}...")
 
-        # Last month actual weather
         last_month = fetch_weather_last_month(state)
-        
-        # Fallback: use historical average if current month fetch fails
         if not last_month:
-            print(f"  Weather API failed for {state}, using historical average...")
+            logger.warning(
+                f"Weather API failed for {state}, using historical average..."
+            )
             current_month = datetime.today().month
             last_month = get_seasonal_weather_avg(state, current_month)
 
-        # Next 3 months forecast/estimate
-        month1_weather = fetch_weather_forecast(
-            state, month_offset=1)
-        month2_weather = fetch_weather_forecast(
-            state, month_offset=2)
-        month3_weather = fetch_weather_forecast(
-            state, month_offset=3)
+        month1_weather = fetch_weather_forecast(state, month_offset=1)
+        month2_weather = fetch_weather_forecast(state, month_offset=2)
+        month3_weather = fetch_weather_forecast(state, month_offset=3)
 
-        weather_data[state] = {
+        return state, {
             "last_month": last_month,
-            "month1"    : month1_weather,
-            "month2"    : month2_weather,
-            "month3"    : month3_weather,
+            "month1": month1_weather,
+            "month2": month2_weather,
+            "month3": month3_weather,
         }
+
+    weather_data = {}
+    with ThreadPoolExecutor(max_workers=4) as executor:  # Reduced from 6 to 4
+        futures = {
+            executor.submit(_fetch_weather_for_state, state): state
+            for state in TARGET_STATES
+        }
+        for future in as_completed(futures):
+            state = futures[future]
+            try:
+                state_name, data = future.result()
+                weather_data[state_name] = data
+            except Exception as e:
+                logger.error(f"Weather fetch failed for {state}: {e}")
+                weather_data[state] = {
+                    "last_month": None,
+                    "month1": None,
+                    "month2": None,
+                    "month3": None,
+                }
 
     # Combine into per state-vegetable records
     for veg in VEGETABLES:
@@ -493,24 +554,24 @@ def fetch_all_data():
         "fallback_used": fallback_used
     }
 
-    print("\nData fetch complete")
-    print(f"Vegetables fetched : {len(result)}")
-    print(f"Available states   : {len(available_states)}/18")
+    logger.info("\nData fetch complete")
+    logger.info(f"Vegetables fetched : {len(result)}")
+    logger.info(f"Available states   : {len(available_states)}/18")
     if fallback_used:
-        print("⚠️  Fallback to historical data used")
+        logger.warning("⚠️  Fallback to historical data used")
     if failed_states:
-        print(f"Failed states      : {', '.join(failed_states)}")
+        logger.info(f"Failed states      : {', '.join(failed_states)}")
     for veg in result:
-        print(f"  {veg}: {len(result[veg])} states")
+        logger.info(f"  {veg}: {len(result[veg])} states")
 
     return result, metadata
 
 
 if __name__ == "__main__":
     data = fetch_all_data()
-    print("\nSample result:")
+    logger.info("\nSample result:")
     for veg in data:
         for state in list(data[veg].keys())[:2]:
-            print(f"\n{veg} — {state}:")
-            print(f"  Price  : ₹{data[veg][state]['modal_price']}/kg")
-            print(f"  Weather: {data[veg][state]['weather_last']}")
+            logger.info(f"\n{veg} — {state}:")
+            logger.info(f"  Price  : ₹{data[veg][state]['modal_price']}/kg")
+            logger.info(f"  Weather: {data[veg][state]['weather_last']}")

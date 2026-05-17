@@ -5,16 +5,32 @@ import numpy as np
 import lightgbm as lgb
 import joblib
 from datetime import datetime, timedelta
+import logging
+
 from fetch_and_predict import fetch_all_data
 from predict_3month    import (load_artifacts,
-                                predict_3_months,
-                                predict_all_states,
-                                get_month_name)
+                                 predict_3_months,
+                                 predict_all_states,
+                                 get_month_name)
+from features import build_features, get_season, get_producer_latest
+
+# Set up logging
+logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler("app.log"),
+            logging.StreamHandler()
+        ]
+    )
 
 # Get the directory of the current script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(SCRIPT_DIR, "models")
 DATA_DIR = os.path.join(SCRIPT_DIR, "data")
+LIVE_CACHE_PATH = os.path.join(DATA_DIR, "live_snapshot.joblib")
 
 # ════════════════════════════════════════════════════════
 # PAGE CONFIG & STYLING
@@ -239,51 +255,83 @@ def load_prediction_artifacts():
     return load_artifacts()
 
 
+def _load_disk_snapshot():
+    if not os.path.exists(LIVE_CACHE_PATH):
+        return None
+    try:
+        payload = joblib.load(LIVE_CACHE_PATH)
+        if not isinstance(payload, dict):
+            return None
+        if not all(k in payload for k in ["data", "metadata", "fetched_at"]):
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _save_disk_snapshot(data, metadata, fetched_at):
+    try:
+        joblib.dump(
+            {
+                "data": data,
+                "metadata": metadata,
+                "fetched_at": fetched_at,
+            },
+            LIVE_CACHE_PATH,
+        )
+    except Exception:
+        # If disk cache fails, app still works via in-memory cache.
+        pass
+
+
 # ════════════════════════════════════════════════════════
 # PRE-FETCH & CACHE LIVE DATA (Works on Streamlit Cloud!)
 # ════════════════════════════════════════════════════════
-@st.cache_data(ttl=60 * 60 * 6)  # Cache for 6 hours
-def get_live_snapshot(cache_version=0):
+@st.cache_data(ttl=60 * 60 * 6)
+def fetch_live_snapshot_cached(cache_version=0):
     """
-    Fetches live market data once and caches for 6 hours.
-    
-    First user (or after 6 hours): Takes 60-90 seconds
-    Subsequent users (within 6 hours): Instant (from cache)
-    
-    This makes Streamlit Cloud practical by:
-    - Pre-fetching expensive API calls
-    - Caching results for all users
-    - Updates automatically every 6 hours
+    Fetch live market data and cache for 6 hours.
+    Use cache_version to force a refresh.
     """
-    _ = cache_version  # Used to manually invalidate cache
-    
-    print("\n🔄 PRE-FETCHING LIVE MARKET DATA...")
-    print("   (First load only, then cached for 6 hours)")
-    
-    try:
-        fetched, metadata = fetch_all_data()
-        fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        print(f"✅ Data cached at: {fetched_at}")
-        print(f"✅ Cache duration: 6 hours")
-        
-        return fetched, metadata, fetched_at
-    except Exception as e:
-        print(f"❌ Fetch failed: {e}")
-        raise
+    _ = cache_version
+
+    logger.info("\nREFRESHING LIVE MARKET DATA (cached)...")
+    fetched, metadata = fetch_all_data()
+    fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    _save_disk_snapshot(fetched, metadata, fetched_at)
+
+    logger.info(f"Data cached at: {fetched_at}")
+    return fetched, metadata, fetched_at
+
+
+def load_snapshot_fast(allow_fetch=True):
+    """
+    Load a snapshot quickly from disk if available.
+    Falls back to a cached fetch when no snapshot exists.
+    Returns (data, metadata, fetched_at, from_disk).
+    """
+    disk_snapshot = _load_disk_snapshot()
+    if disk_snapshot is not None:
+        return (
+            disk_snapshot.get("data"),
+            disk_snapshot.get("metadata"),
+            disk_snapshot.get("fetched_at"),
+            True,
+        )
+
+    fetched, metadata, fetched_at = fetch_live_snapshot_cached()
+    return fetched, metadata, fetched_at, False
 
 
 model, le_target, feature_cols, cat_mappings = load_model()
 df = load_data()
 
-# PRE-FETCH data on app startup (goes into cache)
-try:
-    live_data, live_metadata, fetched_at = get_live_snapshot()
-except Exception as e:
-    st.warning(f"⚠️ Could not pre-fetch data: {e}")
-    live_data = None
-    live_metadata = None
-    fetched_at = None
+# Load disk snapshot quickly (do not block on live fetch)
+disk_snapshot = _load_disk_snapshot()
+live_data = None if disk_snapshot is None else disk_snapshot.get("data")
+live_metadata = None if disk_snapshot is None else disk_snapshot.get("metadata")
+fetched_at = None if disk_snapshot is None else disk_snapshot.get("fetched_at")
 
 # ════════════════════════════════════════════════════════
 # HELPER FUNCTIONS
@@ -332,30 +380,7 @@ def should_refresh_cache(last_fetched_at_str):
         return False
 
 
-def get_season(month):
-    if month in [6, 7, 8, 9, 10]:    return "Kharif"
-    elif month in [11, 12, 1, 2, 3]: return "Rabi"
-    else:                             return "Zaid"
 
-def get_producer_latest(veg, df):
-    producer_map = {
-        "Tomato" : "Karnataka",
-        "Onion"  : "Maharashtra",
-        "Potato" : "Uttar Pradesh"
-    }
-    producer = producer_map[veg]
-    hist = df[
-        (df["vegetable"] == veg) &
-        (df["state"]     == producer)
-    ].sort_values("date")
-
-    if len(hist) < 2:
-        return None, None, None
-
-    latest     = hist.iloc[-1]["modal_price"]
-    lag1       = hist.iloc[-2]["modal_price"]
-    latest_arr = hist.iloc[-1]["arrival_qty"]
-    return latest, lag1, latest_arr
 
 def build_features(state, veg, modal_price,
                    arrival_qty, temp_max, temp_min,
@@ -686,9 +711,8 @@ if st.session_state.page == "manual":
 
     if predict_clicked:
         X = build_features(
-            state, vegetable, modal_price,
-            arrival_qty, temp_max, temp_min,
-            rainfall_mm, humidity,
+            state, vegetable, modal_price, arrival_qty,
+            temp_max, temp_min, rainfall_mm, humidity,
             predict_month, df
         )
 
@@ -952,6 +976,21 @@ if st.session_state.page == "manual":
 
 elif st.session_state.page == "predict":
 
+    # Warm-up mode for scheduled pings (no UI, just refresh cache)
+    warm_flag = st.query_params.get("warm")
+    if isinstance(warm_flag, list):
+        warm_flag = warm_flag[0] if warm_flag else None
+    if warm_flag == "1":
+        with st.spinner("Refreshing cache..."):
+            st.session_state["live_cache_version"] = (
+                st.session_state.get("live_cache_version", 0) + 1
+            )
+            fetch_live_snapshot_cached(
+                st.session_state["live_cache_version"]
+            )
+        st.success("Warm-up complete.")
+        st.stop()
+
     st.markdown("""
         <div style='background: linear-gradient(135deg, #2F4F4F 0%, #1a2f2f 100%); 
                     padding: 30px; border-radius: 10px; margin: -20px -30px 20px -30px;'>
@@ -964,27 +1003,38 @@ elif st.session_state.page == "predict":
         </div>
     """, unsafe_allow_html=True)
 
-    # Initialize or refresh data intelligently
-    needs_refresh = False
-    
+    # Initialize data quickly from disk snapshot
     if "available_states" not in st.session_state:
-        # First load - always fetch
-        needs_refresh = True
-    elif "fetched_at" in st.session_state:
-        # Check if we should auto-refresh based on data
-        # update window
-        needs_refresh = should_refresh_cache(
-            st.session_state["fetched_at"])
-    
-    if needs_refresh:
-        with st.spinner("Loading market data..."):
-            if "live_cache_version" not in st.session_state:
-                st.session_state["live_cache_version"] = 0
-            else:
-                # Increment version to bypass cache
-                st.session_state["live_cache_version"] += 1
-            
-            fetched, metadata, fetched_at = get_live_snapshot(
+        with st.spinner("Loading live market data..."):
+            try:
+                fetched, metadata, fetched_at, from_disk = load_snapshot_fast()
+            except Exception as e:
+                st.error(f"Failed to load market data: {e}")
+                st.stop()
+
+            st.session_state["available_states"] = metadata[
+                "available_states"]
+            st.session_state["failed_states"] = metadata[
+                "failed_states"]
+            st.session_state["fetched_at"] = fetched_at
+            st.session_state["cached_data"] = fetched
+
+            if from_disk and should_refresh_cache(fetched_at):
+                st.info(
+                    "Showing cached data. Use Refresh to get the latest."
+                )
+
+    refresh_clicked = st.button(
+        "Refresh data",
+        use_container_width=False,
+        key="refresh_btn"
+    )
+    if refresh_clicked:
+        with st.spinner("Refreshing market data..."):
+            st.session_state["live_cache_version"] = (
+                st.session_state.get("live_cache_version", 0) + 1
+            )
+            fetched, metadata, fetched_at = fetch_live_snapshot_cached(
                 st.session_state["live_cache_version"]
             )
             st.session_state["available_states"] = metadata[
