@@ -1,9 +1,9 @@
-streamlit==1.35.0
-pandas==2.0.0
-numpy==1.24.0
-lightgbm==4.0.0
-joblib==1.3.0
-scikit-learn==1.3.0
-matplotlib==3.7.0
-requests==2.31.0
+streamlit>=1.37.0
+pandas>=2.2.0
+numpy>=2.1.0
+lightgbm>=4.5.0
+joblib>=1.3.2
+scikit-learn>=1.5.0
+matplotlib>=3.8.0
+requests>=2.32.0
 
